@@ -1,3 +1,4 @@
+OBJ=src/schedsim.o
 EXEC=schedsim
 SRC=src/schedsim.s
 TEST_DIR=test-cases

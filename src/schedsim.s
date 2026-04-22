@@ -1,3 +1,4 @@
+.code64
 .section .bss
 input_buf:      .space 256
 output_buf:     .space 1024
@@ -7,9 +8,9 @@ process_count:  .space 4
 current_time:   .space 4
 
 # Round Robin helpers (optional)
-rr_queue:       .space 64
-rr_head:        .space 4
-rr_tail:        .space 4
+rr_queue:        .space 64
+rr_head:         .space 4
+rr_tail:         .space 4
 
 .section .data
 newline:        .asciz "\n"
@@ -19,93 +20,181 @@ newline:        .asciz "\n"
 
 _start:
     # READ INPUT
-    mov     $0, %rax
-    mov     $0, %rdi
-    lea     input_buf(%rip), %rsi
-    mov     $256, %rdx
+    movq     $0, %rax
+    movq     $0, %rdi
+    lea      input_buf(%rip), %rsi
+    movq     $256, %rdx
     syscall
 
-    lea     input_buf(%rip), %rbx
+    lea      input_buf(%rip), %rbx
 
     # FCFS Kontrolü
-    cmpb    $'F', (%rbx)
-    je      _handle_fcfs
+    cmpb     $70, (%rbx)         # 'F' karakteri
+    je       _handle_fcfs
 
 _handle_fcfs:
-
-    movq $1, %r15 # ID: 1
-
-    movq $2, %r14 # 2 Sayı oku: Burst ve Arrival
-
-    add $5, %rbx # "FCFS " atla
-
+    movq $1, %r15               # Algoritma ID: 1
+    movq $2, %r14               # 2 Sayı oku: Burst ve Arrival
+    addq $5, %rbx               # "FCFS " atla
     jmp _common_parse        
 
-    
-
-    
 _common_parse:
-    xor     %rdi, %rdi          # rdi = 0 (Süreç sayacı)
+    xorq     %rdi, %rdi          # rdi = 0 (Süreç sayacı)
 
 _parse_loop:
     # 1. BİTİŞ KONTROLÜ
-    movb    (%rbx), %al
-    cmpb    $10, %al             # '\n' (Enter)
-    je      _simulation_start
-    cmpb    $0, %al              # Null
-    je      _simulation_start
-    cmpb    $' ', %al            # Boşluk
-    je      _skip_space
+    movb     (%rbx), %al
+    cmpb     $10, %al            # '\n'
+    je       _simulation_start
+    cmpb     $0, %al             # Null
+    je       _simulation_start
+    cmpb     $32, %al            # Boşluk
+    je       _skip_space
 
     # 2. PROCESS ID KAYDET (A, B...)
-    movb    %al, proc_buf(%rip, %rdi, 16)
-    inc     %rbx                 # Harfi geç ('A'yı geçtik, imleç '-' üzerinde veya değil)
+    # rdi index, her process 16 byte. rdi*16 için shift kullanıyoruz.
+    movq     %rdi, %r11
+    shlq     $4, %r11            # r11 = rdi * 16
+    lea      proc_buf(%rip), %rcx
+    movb     %al, (%rcx, %r11)
+    incq     %rbx                # Harfi geç
 
-    # 3. BURST TIME OKU (Her zaman var)
-    inc     %rbx                 # '-' karakterini atla
-    movb    (%rbx), %al
-    subb    $'0', %al           
-    movzbl  %al, %eax
-    movl    %eax, 4+proc_buf(%rip, %rdi, 16)    # Burst kaydet
-    movl    %eax, 12+proc_buf(%rip, %rdi, 16)   # Remaining kaydet
-    inc     %rbx                 # Rakamı geç ('3'ü geçtik)
+    # 3. BURST TIME OKU
+    incq     %rbx                # '-' karakterini atla
+    movb     (%rbx), %al
+    subb     $48, %al            # '0' çıkar
+    movzbq   %al, %rax
+    movl     %eax, 4(%rcx, %r11)  # Burst kaydet (offset 4)
+    movl     %eax, 12(%rcx, %r11) # Remaining kaydet (offset 12)
+    incq     %rbx                # Rakamı geç
 
-    # --- BURASI KRİTİK: FCFS ise devam et, değilse atla ---
-    cmpq    $2, %r14             # FCFS için r14'ü 2 yapmıştık
-    jne     _finish_process      # Eğer 2 değilse (SJF ise) Arrival okuma, bitir
+    # --- FCFS KONTROLÜ ---
+    cmpq     $2, %r14
+    jne      _finish_process
 
-    # 4. ARRIVAL TIME OKU (Sadece FCFS ve gerekirse RR/PF için)
-    inc     %rbx                 # '-' karakterini atla
-    movb    (%rbx), %al
-    subb    $'0', %al
-    movzbl  %al, %eax
-    movl    %eax, 8+proc_buf(%rip, %rdi, 16)    # Arrival kaydet
-    inc     %rbx                 # Rakamı geç ('1'i geçtik)
+    # 4. ARRIVAL TIME OKU
+    incq     %rbx                # '-' karakterini atla
+    movb     (%rbx), %al
+    subb     $48, %al
+    movzbq   %al, %rax
+    movl     %eax, 8(%rcx, %r11)  # Arrival kaydet (offset 8)
+    incq     %rbx                # Rakamı geç
 
 _finish_process:
-    inc     %rdi                 # Bir sonraki sürece hazırlan
-    # Şu an imleç boşluğun üzerinde olabilir, döngü başına dönünce boşluk kontrolü yapılacak
-    jmp     _parse_loop
-
-    
+    incq     %rdi                # Bir sonraki sürece geç
+    jmp      _parse_loop
 
 _skip_space:
-    inc     %rbx
-    jmp     _parse_loop
+    incq     %rbx
+    jmp      _parse_loop
 
 _simulation_start:
-    movl    %edi, process_count(%rip)  # Toplam süreci kaydet
+    movl     %edi, process_count(%rip)
 
-    cmpq    $1, %r15                   # r15'e 1 demiştik
-    je      _run_fcfs
+    cmpq     $1, %r15
+    je       _run_fcfs
 
 _run_fcfs:
-    jmp     .exit
+    movl     $0, current_time(%rip)
+    movq     $0, %r13            # output_buf index
+    movq     $-1, %r14           # çalışan process index
+    movq     $0, %r15            # biten process sayısı
 
-##################################
-# EXIT SYSCALL
-##################################
+fcfs_simulation:
+    movl     process_count(%rip), %r8d
+    movq     %r15, %rax
+    cmpq     %rax, %r8           # process_count == biten
+    je       fcfs_output
+    
+    cmpq     $-1, %r14
+    jne      fcfs_run_current
+    
+    movq     $999999, %r9        # min_arrival
+    movq     $-1, %r10           # selected_index
+    movq     $0, %r11            # i = 0
+    
+fcfs_select_loop:
+    movq     %r11, %rax
+    cmpq     %rax, %r8
+    je       fcfs_select_done
+    
+    # 16 byte offset hesapla
+    movq     %r11, %rdx
+    shlq     $4, %rdx
+    lea      proc_buf(%rip), %rcx
+    
+    movl     12(%rcx, %rdx), %eax # remaining
+    cmpl     $0, %eax
+    jle      fcfs_select_next
+    
+    movl     8(%rcx, %rdx), %eax  # arrival
+    movl     current_time(%rip), %ebx
+    cmpl     %ebx, %eax
+    jg       fcfs_select_next
+    
+    cmpq     %rax, %r9
+    jle      fcfs_select_next
+    
+    movq     %rax, %r9
+    movq     %r11, %r10
+    
+fcfs_select_next:
+    incq     %r11
+    jmp      fcfs_select_loop
+    
+fcfs_select_done:
+    cmpq     $-1, %r10
+    je       fcfs_idle_cycle
+    movq     %r10, %r14
+    
+fcfs_run_current:
+    movq     %r14, %rdx
+    shlq     $4, %rdx
+    lea      proc_buf(%rip), %rcx
+    movb     (%rcx, %rdx), %al    # ID oku
+    
+    lea      output_buf(%rip), %rcx
+    movb     %al, (%rcx, %r13)    # Output'a yaz
+    incq     %r13
+    
+    # remaining azalt
+    movq     %r14, %rdx
+    shlq     $4, %rdx
+    lea      proc_buf(%rip), %rcx
+    movl     12(%rcx, %rdx), %eax
+    decl     %eax
+    movl     %eax, 12(%rcx, %rdx)
+    
+    cmpl     $0, %eax
+    jne      fcfs_increment_time
+    
+    incq     %r15
+    movq     $-1, %r14
+    jmp      fcfs_increment_time
+
+fcfs_idle_cycle:
+    lea      output_buf(%rip), %rcx
+    movb     $88, (%rcx, %r13)    # 'X'
+    incq     %r13
+
+fcfs_increment_time:
+    incl     current_time(%rip)
+    jmp      fcfs_simulation
+
+fcfs_output:
+    lea      output_buf(%rip), %rcx
+    movb     $10, (%rcx, %r13)    # '\n'
+    incq     %r13
+    
+    movq     $1, %rax
+    movq     $1, %rdi
+    lea      output_buf(%rip), %rsi
+    movq     %r13, %rdx
+    syscall
+    
+    jmp      .exit
+
 .exit:
-    mov     $60, %rax
-    xor     %rdi, %rdi
+    movq     $60, %rax
+    xorq     %rdi, %rdi
     syscall
