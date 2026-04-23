@@ -48,47 +48,67 @@ _handle_sjf:
 
 _common_parse:
     xorq    %rdi, %rdi          # Process sayacı
-
+# Çok basamaklı sayıları okumak için sayı okuma döngüsü tasarladım. Karakter alıp geçmek yerine 0-9 arası sayı gördükçe okumaya devam ediyor.
 _parse_loop:
     movb    (%rbx), %al
-    cmpb    $10, %al             # '\n'
+    cmpb    $10, %al            # '\n'
     je      _simulation_start
     cmpb    $0, %al             # Null
     je      _simulation_start
     cmpb    $32, %al            # Boşluk
     je      _skip_space
 
-    # Process ID Kaydet
-    # rdi index, her process 16 byte. rdi*16 için shift kullanıyoruz.
+    # Process id'yi kaydet
     movq    %rdi, %r11
     shlq    $4, %r11            # r11 = rdi * 16
     lea     proc_buf(%rip), %rcx
-    movb    %al, (%rcx, %r11)
-    incq    %rbx                 # Harfi geç
+    movb    %al, (%rcx, %r11)   # id'yi  yaz
+    incq    %rbx                # harfi geç
 
-    # Burst Time Oku
+    # Çok basamaklı burst time okuma
     incq    %rbx                # '-' karakterini atla
-    movb    (%rbx), %al
-    subb    $48, %al
-    movzbq  %al, %rax
-    movl    %eax, 4(%rcx, %r11)  # Burst kaydet (offset 4)
-    movl    %eax, 12(%rcx, %r11) # Remaining kaydet (offset 12)
-    incq    %rbx                 # Rakamı geç
+    xorq    %rax, %rax          # sonucu sıfırla
+_read_burst_loop:
+    movzbq  (%rbx), %rdx        # karakteri rdx'e al
+    cmpb    $48, %dl            # 0' dan küçük mü?
+    jl      _read_burst_done
+    cmpb    $57, %dl            # 9' dan büyük mü?
+    jg      _read_burst_done
+    
+    # Yeni rakam okuduğunda eskisini 10 ile çarpıp yenisini ekliyor.
+    subq    $48, %rdx           # karakteri rakama çevir
+    imulq   $10, %rax           # rax = rax * 10
+    addq    %rdx, %rax          # rax = rax + rakam
+    incq    %rbx                # imleci ilerlet
+    jmp     _read_burst_loop
+_read_burst_done:
+    movl    %eax, 4(%rcx, %r11)  # burst'ü kaydet
+    movl    %eax, 12(%rcx, %r11) # remaining'e burst'ü yaz
 
-    # FCFS ise Arrival Oku
+    # FCFS ise arrival oku (çok basamaklı)
     cmpq    $2, %r14
     jne     _finish_process
-
-
     incq    %rbx                # '-' karakterini atla
-    movb    (%rbx), %al
-    subb    $48, %al
-    movzbq  %al, %rax
-    movl    %eax, 8(%rcx, %r11)  # Arrival kaydet (offset 8)
-    incq    %rbx                 # Rakamı geç
+    xorq    %rax, %rax          # sonucu sıfırla
+
+_read_arrival_loop:
+    movzbq  (%rbx), %rdx
+    cmpb    $48, %dl
+    jl      _read_arrival_done
+    cmpb    $57, %dl
+    jg      _read_arrival_done
+    
+    subq    $48, %rdx
+    imulq   $10, %rax
+    addq    %rdx, %rax
+    incq    %rbx
+    jmp     _read_arrival_loop
+
+_read_arrival_done:
+    movl    %eax, 8(%rcx, %r11)  # arrival'ı kaydet
 
 _finish_process:
-    incq    %rdi
+    incq    %rdi                # bir sonraki sürece hazırlan
     jmp     _parse_loop
 
 _skip_space:
@@ -99,7 +119,7 @@ _simulation_start:
     movl    %edi, process_count(%rip)
     cmpq    $1, %r15
     je      _run_fcfs
-    jmp     _run_sjf            # Değilse SJF'ye git
+    jmp     _run_sjf            # değilse SJF'ye git
 
 
 # FCFS 
