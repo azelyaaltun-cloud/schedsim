@@ -33,6 +33,8 @@ _start:
     je      _handle_fcfs
     cmpb    $83, (%rbx)         # 'S'
     je      _check_s_type       # hangi 'S'?
+    cmpb    $80, (%rbx)         # 'P' 
+    je      _handle_pf
     jmp     .exit
 
 _check_s_type:
@@ -56,6 +58,13 @@ _handle_srtf:
     movq    $3, %r15            # Algoritma ID: 3
     movq    $2, %r14            # 2 Sayı oku (Burst-Arrival)
     addq    $5, %rbx
+    jmp     _common_parse
+
+
+_handle_pf:
+    movq    $4, %r15            # Algoritma ID: 4
+    movq    $3, %r14            # 3 Sayı oku (Burst-Arrival-Priority)
+    addq    $3, %rbx          
     jmp     _common_parse
 
 _common_parse:
@@ -98,9 +107,9 @@ _read_burst_done:
     movl    %eax, 4(%rcx, %r11)   # burst'ü kaydet
     movl    %eax, 12(%rcx, %r11)  # remaining'e burst'ü yaz
 
-    # FCFS ise arrival oku (çok basamaklı)
-    cmpq    $2, %r14
-    jne     _finish_process
+    #r14 1 den büyükse arrival oku yani sjf hariç arrival okuma
+    cmpq    $1, %r14
+    jle     _finish_process
     incq    %rbx                # '-' karakterini atla
     xorq    %rax, %rax          # sonucu sıfırla
 
@@ -120,9 +129,33 @@ _read_arrival_loop:
 _read_arrival_done:
     movl    %eax, 8(%rcx, %r11)   # arrival'ı kaydet
 
+    cmpq    $4, %r15              # Eğer algoritma PF (ID: 4) ise devam et
+    jne     _finish_process        # Değilse (FCFS/SRTF) bitir
+
+    incq    %rbx                   # '-' karakterini geç
+    xorq    %rax, %rax
+
+_read_priority_loop:
+    movzbq  (%rbx), %rdx
+    subq    $48, %rdx              # Rakam kontrolü (Pratik yol)
+    cmpq    $9, %rdx
+    ja      _read_priority_done    # Rakam değilse (boşluk veya harfse) dur
+    
+    imulq   $10, %rax
+    addq    %rdx, %rax
+    incq    %rbx
+    jmp     _read_priority_loop
+
+_read_priority_done:
+    movb    %al, 1(%rcx, %r11)     # Priority'yi Offset 1'e kaydet
+
 _finish_process:
     incq    %rdi                # bir sonraki sürece hazırlan
-    jmp     _parse_loop
+_skip_tail_spaces:
+    cmpb    $32, (%rbx)
+    jne     _parse_loop            # Boşluk bittiyse başa dön (yeni harf ara)
+    incq    %rbx
+    jmp     _skip_tail_spaces
 
 _skip_space:
     incq    %rbx
@@ -136,6 +169,8 @@ _simulation_start:
     je      _run_sjf
     cmpq    $3, %r15
     je      _run_srtf
+    cmpq    $4, %r15    
+    je      _run_pf
     jmp     .exit
 
 # FCFS
@@ -360,6 +395,94 @@ srtf_idle:
     incq    %r13
     incl    current_time(%rip)
     jmp     srtf_simulation
+
+
+_run_pf:
+    movl    $0, current_time(%rip)
+    movq    $0, %r13            # output_buf index
+    movq    $0, %r15            # biten process sayısı
+
+pf_simulation:
+    movl    process_count(%rip), %r8d
+    cmpq    %r15, %r8           # Hepsi bitti mi?
+    je      _output_final
+
+    # # Preemption (her saniye seçim yap)
+
+    movq    $255, %r9           # min_priority 
+    movq    $999999, %r10       # tie_break_remaining (Eşitlikte SRTF kuralı)
+    movq    $-1, %rsi           # selected_index
+    movq    $0, %r11            # i = 0
+
+pf_select_loop:
+    cmpq    %r11, %r8           # Tüm süreçlere bakıldı mı?
+    je      pf_select_done
+
+    movq    %r11, %rdx
+    shlq    $4, %rdx            # 16 byte offset
+    lea     proc_buf(%rip), %rcx
+
+    # Kalan süre > 0 mı?
+    movl    12(%rcx, %rdx), %eax
+    cmpl    $0, %eax
+    jle     pf_select_next
+
+    # Geldi mi? (Arrival <= CurrentTime)
+    movl    8(%rcx, %rdx), %ebx
+    cmpl    current_time(%rip), %ebx
+    jg      pf_select_next
+
+    # Öncelik kıyaslaması (Offset 1'den 1 byte oku)
+    movzbq  1(%rcx, %rdx), %rbx # Priority değerini al
+    cmpq    %r9, %rbx
+    jl      pf_update_best      # Daha küçük sayı = Daha yüksek öncelik
+    jne     pf_select_next      # Daha büyükse (daha düşük öncelik) geç
+    
+    # Tie-break: Priority'ler eşitse kalan süreye bakarız (SRTF)
+    cmpl    %r10d, %eax
+    jl      pf_update_best
+    jmp     pf_select_next      # Hepsi eşitse input sırasını korunur
+
+pf_update_best:
+    movq    %rbx, %r9           # Yeni min_priority
+    movl    %eax, %r10d         # Yeni tie_break_remaining
+    movq    %r11, %rsi          # Seçilen index
+
+pf_select_next:
+    incq    %r11
+    jmp     pf_select_loop
+
+pf_select_done:
+    cmpq    $-1, %rsi          # Uygun süreç bulunamadıysa boştadır (Idle)
+    je      pf_idle
+
+
+    movq    %rsi, %rdx
+    shlq    $4, %rdx
+    lea     proc_buf(%rip), %rcx
+    
+    # ID'yi (Offset 0) output_buf'a yaz
+    movb    (%rcx, %rdx), %al
+    lea     output_buf(%rip), %r12
+    movb    %al, (%r12, %r13)
+    incq    %r13
+
+    # Kalan süreyi azalt
+    decl    12(%rcx, %rdx)
+    cmpl    $0, 12(%rcx, %rdx)
+    jne     pf_tick             # Süreç henüz bitmedi
+    incq    %r15                # Süreç bitti, sayacı artır
+
+pf_tick:
+    incl    current_time(%rip)
+    jmp     pf_simulation       # Her saniye başa dön (Preemption kontrolü)
+
+pf_idle:
+    lea     output_buf(%rip), %r12
+    movb    $88, (%r12, %r13)   # 'X' (Idle)
+    incq    %r13
+    incl    current_time(%rip)
+    jmp     pf_simulation
 
 # ÇIKTI
 _output_final:
