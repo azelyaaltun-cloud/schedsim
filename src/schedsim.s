@@ -35,6 +35,8 @@ _start:
     je      _check_s_type       # hangi 'S'?
     cmpb    $80, (%rbx)         # 'P' 
     je      _handle_pf
+    cmpb    $82, (%rbx)         # 'R'
+    je      _handle_rr
     jmp     .exit
 
 _check_s_type:
@@ -67,6 +69,12 @@ _handle_pf:
     addq    $3, %rbx          
     jmp     _common_parse
 
+_handle_rr:
+    movq    $5, %r15            # Algoritma ID: 5
+    movq    $1, %r14            # Burst oku
+    addq    $3, %rbx          
+    jmp     _common_parse
+
 _common_parse:
     xorq    %rdi, %rdi          # Process sayacı
 # Çok basamaklı sayıları okumak için sayı okuma döngüsü tasarladım. Karakter alıp geçmek yerine 0-9 arası sayı gördükçe okumaya devam ediyor.
@@ -78,6 +86,17 @@ _parse_loop:
     je      _simulation_start
     cmpb    $32, %al            # Boşluk
     je      _skip_space
+
+    # RR'de son token quantum olur, o yüzden rakamla başlıyorsa quantum oku ve parse'ı bitir
+    cmpq    $5, %r15
+    jne     _not_rr_quantum
+    cmpb    $48, %al
+    jl      _not_rr_quantum
+    cmpb    $57, %al
+    jg      _not_rr_quantum
+    jmp     _read_rr_quantum_at_end
+
+_not_rr_quantum:
 
     # Process id'yi kaydet
     movq    %rdi, %r11
@@ -157,6 +176,26 @@ _skip_tail_spaces:
     incq    %rbx
     jmp     _skip_tail_spaces
 
+_read_rr_quantum_at_end:
+    xorq    %rax, %rax
+
+_read_rr_quantum_loop:
+    movzbq  (%rbx), %rdx
+    cmpb    $48, %dl
+    jl      _read_rr_quantum_done
+    cmpb    $57, %dl
+    jg      _read_rr_quantum_done
+
+    subq    $48, %rdx
+    imulq   $10, %rax
+    addq    %rdx, %rax
+    incq    %rbx
+    jmp     _read_rr_quantum_loop
+
+_read_rr_quantum_done:
+    movl    %eax, temp_buf(%rip)
+    jmp     _simulation_start
+
 _skip_space:
     incq    %rbx
     jmp     _parse_loop
@@ -171,6 +210,8 @@ _simulation_start:
     je      _run_srtf
     cmpq    $4, %r15    
     je      _run_pf
+    cmpq    $5, %r15
+    je      _run_rr
     jmp     .exit
 
 # FCFS
@@ -483,6 +524,136 @@ pf_idle:
     incq    %r13
     incl    current_time(%rip)
     jmp     pf_simulation
+
+# Round Robin
+_run_rr:
+    movl    $0, current_time(%rip)
+    movq    $0, %r13            # output_buf indexi
+    movq    $0, %r15            # biten process sayısı
+    movq    $-1, %r14           # çalışan process indexi
+    movq    $0, %r12            # quantum sayacı
+    
+    # Kuyruk göstergelerini sıfırlayalım.
+    movl    $0, rr_head(%rip)
+    movl    $0, rr_tail(%rip)
+    xorq    %r11, %r11
+
+rr_init_queue:
+    movl    process_count(%rip), %r8d
+    cmpq    %r11, %r8
+    je      rr_init_done
+
+    lea     rr_queue(%rip), %rsi
+    movb    %r11b, (%rsi, %r11)
+    incq    %r11
+    jmp     rr_init_queue
+
+rr_init_done:
+    movl    %r8d, rr_tail(%rip)
+
+rr_simulation:
+    movl    process_count(%rip), %r8d
+    cmpq    %r15, %r8
+    je      _output_final
+    jmp     rr_handle_current
+
+rr_handle_current:
+    # Çalışan süreç kontrolü
+    cmpq    $-1, %r14
+    je      rr_try_new_process   # çalışan yoksa kuyruğa bakıyoruz.
+    
+    # Çalışan varsa quantum doldu mu diye bakıyoruz.
+    movl    temp_buf(%rip), %eax # Quantum sınırı
+    cmpl    %eax, %r12d
+    jl      rr_run_execution     # Dolmadıysa devam ederiz.
+
+    # Dolduysa ve iş bitmediyse kuyruğun sonuna at.
+    movq    %r14, %rdx
+    shlq    $4, %rdx
+    lea     proc_buf(%rip), %rcx
+    movl    12(%rcx, %rdx), %eax # Kalan süre
+    testl   %eax, %eax
+    jz      rr_try_new_process   # Bttiyse geri atma
+    
+    # Kuyruğun sonuna ekle
+    lea     rr_queue(%rip), %rsi
+    xorq    %rax, %rax
+    movl    rr_tail(%rip), %eax
+    movb    %r14b, (%rsi, %rax)
+    incl    rr_tail(%rip)
+    movq    $-1, %r14            # Boşa çıkar
+
+rr_try_new_process:
+    # Kuyrukta biri var mı? ( yani Head != Tail)
+    movl    rr_head(%rip), %eax
+    cmpl    rr_tail(%rip), %eax
+    je      rr_check_if_idle     # Kuyruk boşsa
+    
+    # Kuyruğun başındakini al
+    lea     rr_queue(%rip), %rsi
+    movzbq  (%rsi, %rax), %r14   # Yeni r14 (Çalışan)
+    incl    rr_head(%rip)
+    movq    $0, %r12             # Quantum sayacını sıfırla
+
+rr_run_execution:
+    cmpq    $-1, %r14
+    je      rr_idle
+
+    # Yap
+    movq    %r14, %rdx
+    shlq    $4, %rdx
+    lea     proc_buf(%rip), %rcx
+    
+    # ID yaz
+    movb    (%rcx, %rdx), %al
+    lea     output_buf(%rip), %rsi
+    movb    %al, (%rsi, %r13)
+    incq    %r13
+    
+    decl    12(%rcx, %rdx)       # Kalan süreyi azalt
+    incq    %r12                 # Quantum sayacını artır
+    
+    # İş bitti mi?
+    cmpl    $0, 12(%rcx, %rdx)
+    jne     rr_tick
+    
+    # Bittiyse
+    incq    %r15
+    movq    $-1, %r14
+
+    # Quantum dolmadıysa kalan slotlar X olmalı
+    movl    temp_buf(%rip), %eax
+    cmpl    %eax, %r12d
+    jl      rr_padding_x
+
+    jmp     rr_tick
+
+rr_check_if_idle:
+    # Eğer kuyruk boşsa ve şu an çalışan yoksa Idle olur.
+    cmpq    $-1, %r14
+    jne     rr_run_execution
+
+rr_padding_x:
+    lea     output_buf(%rip), %rsi
+    movb    $88, (%rsi, %r13)    # 'X'
+    incq    %r13
+    incq    %r12
+    incl    current_time(%rip)
+
+    movl    temp_buf(%rip), %eax
+    cmpl    %eax, %r12d
+    jl      rr_padding_x
+
+    jmp     rr_simulation
+
+rr_idle:
+    lea     output_buf(%rip), %r12
+    movb    $88, (%r12, %r13)    # 'X'
+    incq    %r13
+
+rr_tick:
+    incl    current_time(%rip)
+    jmp     rr_simulation
 
 # ÇIKTI
 _output_final:
