@@ -1,7 +1,7 @@
 name: Grade
 
 on: 
-  workflow_dispatch
+  push
 
 jobs:
   grade:
