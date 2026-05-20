@@ -8,7 +8,7 @@ process_count:  .space 4
 current_time:   .space 4
 
 # Round Robin helpers (optional)
-rr_queue:        .space 64
+rr_queue:        .space 1024
 rr_head:         .space 4
 rr_tail:         .space 4
 
